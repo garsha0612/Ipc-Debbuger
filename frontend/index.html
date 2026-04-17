@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IPC Debugger — Inter-Process Communication Visualizer</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════
+     APP SHELL
+════════════════════════════════════════════════════ -->
+<div id="app">
+
+  <!-- ── SIDEBAR ── -->
+  <aside id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">IPC Debugger</div>
+        <div class="brand-sub">v2.0.0 · live</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Monitor</div>
+
+      <div class="nav-item active" data-view="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+        </svg>
+        Dashboard
+      </div>
+
+      <div class="nav-item" data-view="metrics">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        Metrics
+      </div>
+
+      <div class="nav-item" data-view="messages">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>
+        </svg>
+        Message Flow
+      </div>
+
+      <div class="nav-section-label" style="margin-top:8px">Diagnostics</div>
+
+      <div class="nav-item" data-view="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        Deadlock
+        <span class="nav-badge" id="deadlock-badge">!</span>
+      </div>
+
+      <div class="nav-item" data-view="messages">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+        </svg>
+        IPC Logs
+      </div>
+    </nav>
+
+    <div class="sidebar-status">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Connecting…</span>
+    </div>
+  </aside>
+
+  <!-- ── TOPBAR ── -->
+  <header id="topbar">
+    <div class="topbar-metrics">
+      <!-- Metric pills -->
+      <div class="metric-pill">
+        <span class="metric-label">Msg/s</span>
+        <span class="metric-value cyan" id="m-msg-rate">0/s</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">Latency</span>
+        <span class="metric-value" id="m-latency">—</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">Throughput</span>
+        <span class="metric-value green" id="m-throughput">—</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">Active</span>
+        <span class="metric-value purple" id="m-active">0</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">Total Msgs</span>
+        <span class="metric-value" id="m-total">0</span>
+      </div>
+
+      <!-- Deadlock alert -->
+      <div class="deadlock-alert" id="deadlock-alert">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13" stroke="var(--bg-base)" stroke-width="2"/>
+          <line x1="12" y1="17" x2="12.01" y2="17" stroke="var(--bg-base)" stroke-width="2"/>
+        </svg>
+        DEADLOCK DETECTED
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="btn btn-warn" id="btn-deadlock">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        Inject Deadlock
+      </button>
+      <button class="btn btn-danger" id="btn-clear">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3"/>
+        </svg>
+        Clear
+      </button>
+      <button class="btn btn-secondary" id="btn-burst">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+        Burst
+      </button>
+      <button class="btn btn-primary" id="btn-new-process">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>
+        </svg>
+        New Process
+      </button>
+    </div>
+  </header>
+
+  <!-- ── MAIN CONTENT ── -->
+  <main id="main" class="active">
+
+    <!-- ════════════════════════════════════════
+         DASHBOARD VIEW
+    ════════════════════════════════════════ -->
+    <div class="view-page active" id="view-dashboard">
+      <div class="dashboard-grid">
+
+        <!-- Process Graph -->
+        <div class="glass-card" id="graph-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
+                <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
+              </svg>
+              Process Graph
+            </div>
+            <div class="card-actions">
+              <button class="card-btn" id="btn-fit-graph">Fit</button>
+              <div style="display:flex;align-items:center;gap:10px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted)">
+                <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block"></span>Running</span>
+                <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--yellow);display:inline-block"></span>Waiting</span>
+                <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block"></span>Blocked</span>
+              </div>
+            </div>
+          </div>
+          <canvas id="graph-canvas" style="cursor:grab;"></canvas>
+        </div>
+
+        <!-- Process List -->
+        <div class="glass-card" id="process-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+                <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+              </svg>
+              Processes
+            </div>
+            <span id="proc-count-badge" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);background:var(--bg-elevated);border:1px solid var(--border-dim);padding:2px 8px;border-radius:4px;">0</span>
+          </div>
+          <div id="process-list"></div>
+        </div>
+
+        <!-- IPC Log -->
+        <div class="glass-card" id="log-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+              IPC Event Log
+            </div>
+            <div class="card-actions">
+              <button class="card-btn" onclick="window._clearLogs()">Clear</button>
+            </div>
+          </div>
+          <div id="log-list"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════
+         METRICS VIEW
+    ════════════════════════════════════════ -->
+    <div class="view-page" id="view-metrics">
+      <div class="view-subheader">
+        <span>Performance Metrics — Live Telemetry</span>
+        <span id="metrics-ts" style="font-size:9px;color:var(--text-muted)">updating…</span>
+      </div>
+      <div class="metrics-scroll">
+
+        <!-- ── Row 1: KPI cards ── -->
+        <div class="metrics-grid">
+
+          <div class="metric-card" style="--accent:var(--cyan)">
+            <div class="metric-card-label">Total Messages</div>
+            <div class="metric-card-value" id="mc-total">0</div>
+            <div class="metric-card-delta">↑ cumulative since start</div>
+          </div>
+
+          <div class="metric-card" style="--accent:var(--purple)">
+            <div class="metric-card-label">Messages / Sec</div>
+            <div class="metric-card-value"><span id="mc-rate">0.0</span><span class="metric-card-unit">/s</span></div>
+            <canvas class="sparkline" id="spark-rate"></canvas>
+          </div>
+
+          <div class="metric-card" style="--accent:var(--yellow)">
+            <div class="metric-card-label">Avg Latency</div>
+            <div class="metric-card-value"><span id="mc-latency">0.00</span><span class="metric-card-unit">ms</span></div>
+            <canvas class="sparkline" id="spark-latency"></canvas>
+          </div>
+
+          <div class="metric-card" style="--accent:var(--green)">
+            <div class="metric-card-label">Throughput</div>
+            <div class="metric-card-value"><span id="mc-throughput">0.0</span><span class="metric-card-unit">kbps</span></div>
+            <canvas class="sparkline" id="spark-throughput"></canvas>
+          </div>
+
+          <div class="metric-card" style="--accent:var(--green)">
+            <div class="metric-card-label">Active Processes</div>
+            <div class="metric-card-value" id="mc-active">0</div>
+            <div class="metric-card-delta">in running state</div>
+          </div>
+
+          <div class="metric-card" style="--accent:var(--red)">
+            <div class="metric-card-label">Blocked Processes</div>
+            <div class="metric-card-value" id="mc-blocked">0</div>
+            <div class="metric-card-delta">deadlock risk</div>
+          </div>
+
+        </div>
+
+        <!-- ── Row 2: IPC breakdown + process state ── -->
+        <div class="metrics-grid-2col">
+
+          <!-- IPC Channel Activity -->
+          <div class="glass-card" style="padding:18px 20px;gap:14px;display:flex;flex-direction:column;">
+            <div class="card-title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+              </svg>
+              IPC Channel Activity
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                  <span class="ipc-label-pipe">⇄ PIPE</span>
+                  <span class="ipc-stat" id="ipc-pipe-pct">—</span>
+                </div>
+                <div class="progress-bar" style="height:7px;"><div class="progress-fill cyan" id="ipc-pipe-bar" style="width:0%"></div></div>
+              </div>
+              <div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                  <span class="ipc-label-queue">≡ MESSAGE QUEUE</span>
+                  <span class="ipc-stat" id="ipc-queue-pct">—</span>
+                </div>
+                <div class="progress-bar" style="height:7px;"><div class="progress-fill" id="ipc-queue-bar" style="width:0%;background:linear-gradient(90deg,var(--purple),#c4b5fd);"></div></div>
+              </div>
+              <div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                  <span class="ipc-label-shm">◈ SHARED MEMORY</span>
+                  <span class="ipc-stat" id="ipc-shm-pct">—</span>
+                </div>
+                <div class="progress-bar" style="height:7px;"><div class="progress-fill green" id="ipc-shm-bar" style="width:0%"></div></div>
+              </div>
+            </div>
+            <!-- Latency histogram canvas -->
+            <div style="margin-top:6px;">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:6px;">Latency Distribution Histogram</div>
+              <canvas id="latency-histogram" style="width:100%;height:56px;display:block;"></canvas>
+            </div>
+          </div>
+
+          <!-- Process State Panel -->
+          <div class="glass-card" style="padding:18px 20px;gap:14px;display:flex;flex-direction:column;">
+            <div class="card-title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
+              </svg>
+              Process State Distribution
+            </div>
+            <!-- CPU bar chart per process -->
+            <div style="display:flex;gap:5px;height:52px;align-items:flex-end;" id="state-bars"></div>
+            <div style="display:flex;gap:14px;font-family:'JetBrains Mono',monospace;font-size:10px;flex-wrap:wrap;">
+              <span style="color:var(--green);">● <span id="state-running-count">0</span> running</span>
+              <span style="color:var(--yellow);">● <span id="state-waiting-count">0</span> waiting</span>
+              <span style="color:var(--red);">● <span id="state-blocked-count">0</span> blocked</span>
+            </div>
+            <!-- Connection health grid -->
+            <div style="margin-top:4px;">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:8px;">Connection Health</div>
+              <div id="conn-health-grid" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ── Row 3: IPC Mechanism Reference ── -->
+        <div class="glass-card" style="padding:18px 20px;display:flex;flex-direction:column;gap:14px;">
+          <div class="card-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+            </svg>
+            IPC Mechanism Reference
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+            <div class="ipc-ref-card" style="border-color:rgba(0,212,255,0.25);">
+              <div class="ipc-ref-title" style="color:var(--ipc-pipe);">⇄ PIPE</div>
+              <div class="ipc-ref-body">Half-duplex byte stream between related processes. Low overhead, kernel-buffered. Best for sequential producer-consumer patterns.</div>
+              <div class="ipc-ref-stats">
+                <div class="ipc-ref-stat"><span>Latency</span><span style="color:var(--ipc-pipe);">~0.05ms</span></div>
+                <div class="ipc-ref-stat"><span>Buffer</span><span style="color:var(--ipc-pipe);">64KB kernel</span></div>
+                <div class="ipc-ref-stat"><span>Direction</span><span style="color:var(--ipc-pipe);">Unidirectional</span></div>
+                <div class="ipc-ref-stat"><span>Syscall</span><span style="color:var(--ipc-pipe);">pipe(2) / read/write</span></div>
+              </div>
+            </div>
+            <div class="ipc-ref-card" style="border-color:rgba(167,139,250,0.25);">
+              <div class="ipc-ref-title" style="color:var(--ipc-queue);">≡ MESSAGE QUEUE</div>
+              <div class="ipc-ref-body">Discrete message passing with priority support. Decoupled sender/receiver. Persistent until consumed. POSIX mq_send/mq_receive.</div>
+              <div class="ipc-ref-stats">
+                <div class="ipc-ref-stat"><span>Latency</span><span style="color:var(--ipc-queue);">~0.12ms</span></div>
+                <div class="ipc-ref-stat"><span>Priority</span><span style="color:var(--ipc-queue);">Yes (0–31)</span></div>
+                <div class="ipc-ref-stat"><span>Persistence</span><span style="color:var(--ipc-queue);">Until unlink</span></div>
+                <div class="ipc-ref-stat"><span>Syscall</span><span style="color:var(--ipc-queue);">mq_open / mq_send</span></div>
+              </div>
+            </div>
+            <div class="ipc-ref-card" style="border-color:rgba(0,255,136,0.25);">
+              <div class="ipc-ref-title" style="color:var(--ipc-shm);">◈ SHARED MEMORY</div>
+              <div class="ipc-ref-body">Zero-copy memory region shared across processes. Fastest IPC mechanism. Requires synchronization via semaphores or mutexes to prevent races.</div>
+              <div class="ipc-ref-stats">
+                <div class="ipc-ref-stat"><span>Latency</span><span style="color:var(--ipc-shm);">~0.01ms</span></div>
+                <div class="ipc-ref-stat"><span>Copy</span><span style="color:var(--ipc-shm);">Zero-copy</span></div>
+                <div class="ipc-ref-stat"><span>Sync</span><span style="color:var(--ipc-shm);">Mutex/Semaphore</span></div>
+                <div class="ipc-ref-stat"><span>Syscall</span><span style="color:var(--ipc-shm);">shm_open / mmap</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════
+         MESSAGES VIEW
+    ════════════════════════════════════════ -->
+    <div class="view-page" id="view-messages">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border-dim);font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:var(--text-muted);flex-shrink:0;display:flex;align-items:center;justify-content:space-between">
+        <span>IPC Message Flow — Live Capture</span>
+        <button class="card-btn" onclick="window._clearMessages()">Clear</button>
+      </div>
+      <div id="msg-table-wrap" style="flex:1;overflow-y:auto;border-radius:0;border:none;border-bottom:1px solid var(--border-dim)">
+        <table class="msg-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>IPC Type</th>
+              <th>Source</th>
+              <th>Destination</th>
+              <th>Size (bytes)</th>
+              <th>Latency (ms)</th>
+            </tr>
+          </thead>
+          <tbody id="msg-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </main><!-- /#main -->
+
+</div><!-- /#app -->
+
+<!-- ════════════════════════════════════════════════════
+     DETAIL PANEL (slide-in)
+════════════════════════════════════════════════════ -->
+<aside id="detail-panel">
+  <div class="detail-header">
+    <div class="detail-title">Process Details</div>
+    <button class="detail-close" id="detail-close">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="detail-body">
+
+    <!-- Identity -->
+    <div class="detail-section">
+      <div class="detail-section-title">Identity</div>
+      <div class="detail-kv">
+        <span class="detail-key">PID</span>
+        <span class="detail-val" id="detail-pid" style="font-family:'JetBrains Mono',monospace">—</span>
+      </div>
+      <div class="detail-kv">
+        <span class="detail-key">Name</span>
+        <span class="detail-val" id="detail-name">—</span>
+      </div>
+      <div class="detail-kv">
+        <span class="detail-key">State</span>
+        <span class="state-badge state-running" id="detail-state">running</span>
+      </div>
+      <div class="detail-kv">
+        <span class="detail-key">IPC Type</span>
+        <span class="detail-val" id="detail-ipc">—</span>
+      </div>
+    </div>
+
+    <!-- Resources -->
+    <div class="detail-section">
+      <div class="detail-section-title">Resources</div>
+      <div class="detail-kv">
+        <span class="detail-key">CPU Usage</span>
+        <span class="detail-val" id="detail-cpu">—</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill cyan" id="detail-cpu-bar" style="width:0%"></div>
+      </div>
+      <div class="detail-kv" style="margin-top:8px">
+        <span class="detail-key">Memory</span>
+        <span class="detail-val" id="detail-mem">—</span>
+      </div>
+      <div class="detail-kv" style="margin-top:6px">
+        <span class="detail-key">Buffer Usage</span>
+        <span class="detail-val" id="detail-buf">—</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill green" id="detail-buf-bar" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Messaging -->
+    <div class="detail-section">
+      <div class="detail-section-title">Messaging</div>
+      <div class="detail-kv">
+        <span class="detail-key">Sent</span>
+        <span class="detail-val" id="detail-sent" style="color:var(--green)">0</span>
+      </div>
+      <div class="detail-kv">
+        <span class="detail-key">Received</span>
+        <span class="detail-val" id="detail-recv" style="color:var(--cyan)">0</span>
+      </div>
+    </div>
+
+    <!-- Connections -->
+    <div class="detail-section">
+      <div class="detail-section-title">Connections</div>
+      <div id="detail-conns" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+
+    <!-- Actions -->
+    <div class="detail-section" id="detail-actions">
+      <div class="detail-section-title">Control</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+        <button class="btn btn-secondary" id="btn-set-running" style="font-size:10px;padding:5px 6px;justify-content:center">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span>
+          Running
+        </button>
+        <button class="btn btn-secondary" id="btn-set-waiting" style="font-size:10px;padding:5px 6px;justify-content:center">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--yellow);flex-shrink:0"></span>
+          Waiting
+        </button>
+        <button class="btn btn-secondary" id="btn-set-blocked" style="font-size:10px;padding:5px 6px;justify-content:center">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--red);flex-shrink:0"></span>
+          Blocked
+        </button>
+      </div>
+      <button class="btn btn-danger" id="detail-kill" style="width:100%;justify-content:center;margin-top:6px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+        </svg>
+        Kill Process
+      </button>
+    </div>
+
+  </div>
+</aside>
+
+<!-- ════════════════════════════════════════════════════
+     GRAPH TOOLTIP
+════════════════════════════════════════════════════ -->
+<div id="graph-tooltip">
+  <div class="tooltip-name" id="tooltip-name">—</div>
+  <div class="tooltip-row"><span>State</span><span id="tooltip-state">—</span></div>
+  <div class="tooltip-row"><span>CPU</span><span id="tooltip-cpu">—</span></div>
+  <div class="tooltip-row"><span>Memory</span><span id="tooltip-mem">—</span></div>
+  <div class="tooltip-row"><span>Sent</span><span id="tooltip-sent">—</span></div>
+  <div class="tooltip-row"><span>Recv</span><span id="tooltip-recv">—</span></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     MODAL — Create Process
+════════════════════════════════════════════════════ -->
+<div id="modal-overlay">
+  <div class="modal">
+    <div class="modal-title">Spawn New Process</div>
+
+    <div class="form-group">
+      <label class="form-label">Process Name (optional)</label>
+      <input class="form-input" id="form-name" type="text" placeholder="Auto-generated if empty" autocomplete="off" />
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">IPC Mechanism</label>
+      <select class="form-select" id="form-ipc">
+        <option value="">Random</option>
+        <option value="pipe">Pipe</option>
+        <option value="queue">Message Queue</option>
+        <option value="shared_memory">Shared Memory</option>
+      </select>
+    </div>
+
+    <div style="background:var(--bg-surface);border:1px solid var(--border-dim);border-radius:8px;padding:12px;font-size:11px;color:var(--text-muted);line-height:1.6;font-family:'JetBrains Mono',monospace">
+      Process will be connected to a random existing process and begin simulating IPC communication immediately.
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="modal-close">Cancel</button>
+      <button class="btn btn-primary" id="modal-create">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>
+        </svg>
+        Spawn Process
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     TOAST NOTIFICATIONS
+════════════════════════════════════════════════════ -->
+<div id="toast-container"></div>
+
+<!-- ════════════════════════════════════════════════════
+     KEYBOARD HINTS BAR
+════════════════════════════════════════════════════ -->
+<div id="kbd-bar">
+  <div id="kbd-hints"></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     JS MODULES
+════════════════════════════════════════════════════ -->
+<script type="module" src="/static/js/app.js"></script>
+
+</body>
+</html>
