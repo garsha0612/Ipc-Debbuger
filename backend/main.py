@@ -1,19 +1,17 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import asyncio
 import os
-import time
 import random
-from collections import deque
+import time
 import threading
+from collections import deque
 import json
 
-app = FastAPI()
+app = FastAPI(title="IPC Debugger v2")
 
-# ─────────────────────────────────────────────
-# STATIC FILES
-# ─────────────────────────────────────────────
+# ─────────────── STATIC ───────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(BASE_DIR, "../frontend")
@@ -24,153 +22,142 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 async def serve():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-# ─────────────────────────────────────────────
-# GLOBAL STATE
-# ─────────────────────────────────────────────
+# ─────────────── STATE CLASS ───────────────
 
-state = {
-    "processes": {},
-    "connections": [],
-    "logs": deque(maxlen=100),
-    "messages": deque(maxlen=100),
-    "metrics": {
-        "messages_per_sec": 0,
-        "avg_latency_ms": 0,
-        "throughput_kbps": 0,
-        "active_processes": 0,
-    }
-}
+class IPCState:
+    def __init__(self):
+        self.processes = {}
+        self.connections = []
+        self.logs = deque(maxlen=200)
+        self.messages = deque(maxlen=200)
+        self.metrics = {
+            "messages_per_sec": 0,
+            "avg_latency_ms": 0,
+            "throughput_kbps": 0,
+            "active_processes": 0
+        }
 
-# ─────────────────────────────────────────────
-# CREATE PROCESS (FIXED FOR FRONTEND)
-# ─────────────────────────────────────────────
+    def add_log(self, msg, level="info"):
+        self.logs.append({
+            "timestamp": time.time(),
+            "level": level,
+            "message": msg
+        })
 
-def create_process():
+state = IPCState()
+
+# ─────────────── PROCESS ENGINE ───────────────
+
+def new_process():
     pid = str(random.randint(1000, 9999))
-    state["processes"][pid] = {
+    state.processes[pid] = {
         "pid": pid,
-        "name": f"Process-{pid}",
-        "state": random.choice(["running", "waiting", "blocked"]),
+        "name": f"P-{pid}",
+        "state": "running",
         "ipc_type": random.choice(["pipe", "queue", "shared_memory"]),
-
-        # ✅ FRONTEND EXPECTED FIELDS
-        "cpu_percent": round(random.uniform(5, 50), 2),
-        "memory_bytes": random.randint(500000, 5000000),
-
+        "cpu_percent": round(random.uniform(10, 60), 2),
+        "memory_bytes": random.randint(1_000_000, 5_000_000),
+        "created_at": time.time(),
         "messages_sent": 0,
         "messages_received": 0,
         "buffer_usage": random.random()
     }
 
-# ─────────────────────────────────────────────
-# SIMULATION
-# ─────────────────────────────────────────────
+# ─────────────── SIMULATION LOOP ───────────────
 
-def simulate():
+def engine():
     while True:
-        if len(state["processes"]) < 5:
-            create_process()
+        if len(state.processes) < 6:
+            new_process()
 
-        pids = list(state["processes"].keys())
+        pids = list(state.processes.keys())
 
-        # ✅ CONNECTIONS
-        state["connections"] = []
-        for i in range(len(pids) - 1):
-            state["connections"].append({
+        # connections
+        state.connections = [
+            {
                 "source": pids[i],
-                "target": pids[i+1],
+                "target": pids[(i + 1) % len(pids)],
                 "ipc_type": random.choice(["pipe", "queue", "shared_memory"])
-            })
+            }
+            for i in range(len(pids))
+        ]
 
         # messages
-        if len(pids) >= 2:
-            src, dst = random.sample(pids, 2)
+        if len(pids) > 1:
+            a, b = random.sample(pids, 2)
+            size = random.randint(100, 1200)
+            latency = round(random.uniform(0.2, 2.5), 2)
 
-            state["messages"].append({
-                "source": src,
-                "target": dst,
-                "size_bytes": random.randint(100, 1000),
-                "latency_ms": round(random.uniform(0.1, 2.0), 2),
+            state.messages.append({
+                "source": a,
+                "target": b,
+                "size_bytes": size,
+                "latency_ms": latency,
                 "timestamp": time.time()
             })
 
-            state["processes"][src]["messages_sent"] += 1
-            state["processes"][dst]["messages_received"] += 1
+            state.processes[a]["messages_sent"] += 1
+            state.processes[b]["messages_received"] += 1
 
-        # logs (FIXED timestamp)
-        state["logs"].append({
-            "timestamp": time.time(),
-            "level": "info",
-            "message": "Simulation running"
-        })
+        # update cpu & memory
+        for p in state.processes.values():
+            p["cpu_percent"] = max(0, min(100, p["cpu_percent"] + random.uniform(-3, 3)))
+            p["memory_bytes"] += random.randint(-20000, 20000)
 
         # metrics
-        state["metrics"]["active_processes"] = len(state["processes"])
-        state["metrics"]["messages_per_sec"] = round(random.uniform(1, 10), 2)
+        state.metrics["active_processes"] = len(state.processes)
+        state.metrics["messages_per_sec"] = round(random.uniform(2, 8), 2)
+        state.metrics["avg_latency_ms"] = round(random.uniform(0.5, 1.8), 2)
+        state.metrics["throughput_kbps"] = round(random.uniform(20, 120), 2)
+
+        state.add_log("Engine tick")
 
         time.sleep(1)
 
-# ─────────────────────────────────────────────
-# START SIMULATION
-# ─────────────────────────────────────────────
+# start engine
+for _ in range(3):
+    new_process()
 
-for _ in range(4):
-    create_process()
+threading.Thread(target=engine, daemon=True).start()
 
-threading.Thread(target=simulate, daemon=True).start()
-
-# ─────────────────────────────────────────────
-# API ENDPOINTS
-# ─────────────────────────────────────────────
+# ─────────────── API ───────────────
 
 @app.get("/api/state")
 def get_state():
     return {
-        "processes": state["processes"],
-        "connections": state["connections"],
-        "logs": list(state["logs"]),
-        "messages": list(state["messages"]),
-        "metrics": state["metrics"]
+        "processes": state.processes,
+        "connections": state.connections,
+        "logs": list(state.logs),
+        "messages": list(state.messages),
+        "metrics": state.metrics
     }
 
 @app.post("/api/process/create")
-def api_create_process():
-    create_process()
-    return {"status": "created"}
+def create():
+    new_process()
+    return {"ok": True}
 
-@app.post("/api/send_burst")
-def send_burst():
-    for _ in range(5):
-        create_process()
-    return {"status": "burst_sent"}
+@app.post("/api/clear")
+def clear():
+    state.processes.clear()
+    state.connections.clear()
+    return {"cleared": True}
 
-@app.post("/api/inject/deadlock")
-def deadlock():
-    return {"status": "deadlock_simulated"}
-
-# ─────────────────────────────────────────────
-# WEBSOCKET (FINAL FIX)
-# ─────────────────────────────────────────────
+# ─────────────── WEBSOCKET ───────────────
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-
+async def ws(ws: WebSocket):
+    await ws.accept()
     try:
         while True:
             await asyncio.sleep(1)
-
-            data = {
+            await ws.send_text(json.dumps({
                 "type": "state_update",
-                "processes": state["processes"],
-                "connections": state["connections"],
-                "metrics": state["metrics"],
-                "logs": list(state["logs"]),
-                "messages": list(state["messages"]),
-            }
-
-            # ✅ send as TEXT (frontend compatible)
-            await websocket.send_text(json.dumps(data))
-
-    except WebSocketDisconnect:
-        print("Client disconnected")
+                "processes": state.processes,
+                "connections": state.connections,
+                "metrics": state.metrics,
+                "logs": list(state.logs),
+                "messages": list(state.messages)
+            }))
+    except:
+        pass
