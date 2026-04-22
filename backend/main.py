@@ -1,15 +1,13 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import asyncio
 import os
 import random
 import time
-import threading
-from collections import deque
 import json
 
-app = FastAPI(title="IPC Debugger Pro")
+app = FastAPI(title="IPC Async Actor Engine")
 
 # ───────────── STATIC ─────────────
 
@@ -22,154 +20,148 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 async def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-# ───────────── CONNECTION MANAGER ─────────────
+# ───────────── ACTOR MODEL ─────────────
 
-class WSManager:
-    def __init__(self):
-        self.clients = []
+class ProcessActor:
+    def __init__(self, pid):
+        self.pid = pid
+        self.name = f"Actor-{pid}"
+        self.state = "running"
+        self.ipc_type = random.choice(["pipe", "queue", "shared_memory"])
+        self.cpu = random.uniform(5, 50)
+        self.mem = random.randint(1_000_000, 5_000_000)
+        self.created_at = time.time()
+        self.sent = 0
+        self.recv = 0
+        self.buffer = random.random()
 
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
-        self.clients.append(ws)
+    def tick(self):
+        self.cpu = max(0, min(100, self.cpu + random.uniform(-3, 3)))
+        self.mem += random.randint(-10000, 10000)
+        self.state = random.choice(["running", "waiting", "blocked"])
 
-    def disconnect(self, ws: WebSocket):
-        if ws in self.clients:
-            self.clients.remove(ws)
-
-    async def broadcast(self, data):
-        dead = []
-        for c in self.clients:
-            try:
-                await c.send_text(data)
-            except:
-                dead.append(c)
-        for d in dead:
-            self.disconnect(d)
-
-manager = WSManager()
-
-# ───────────── CORE ENGINE ─────────────
-
-class Engine:
-    def __init__(self):
-        self.processes = {}
-        self.connections = []
-        self.logs = deque(maxlen=200)
-        self.messages = deque(maxlen=200)
-        self.metrics = {
-            "messages_per_sec": 0,
-            "avg_latency_ms": 0,
-            "throughput_kbps": 0,
-            "active_processes": 0
+    def to_dict(self):
+        return {
+            "pid": self.pid,
+            "name": self.name,
+            "state": self.state,
+            "ipc_type": self.ipc_type,
+            "cpu_percent": round(self.cpu, 2),
+            "memory_bytes": self.mem,
+            "created_at": self.created_at,
+            "messages_sent": self.sent,
+            "messages_received": self.recv,
+            "buffer_usage": self.buffer
         }
+
+# ───────────── ENGINE ─────────────
+
+class AsyncEngine:
+    def __init__(self):
+        self.actors = {}
+        self.logs = []
+        self.messages = []
+        self.connections = []
+        self.metrics = {}
 
     def spawn(self):
         pid = str(random.randint(1000, 9999))
-        self.processes[pid] = {
-            "pid": pid,
-            "name": f"Node-{pid}",
-            "state": random.choice(["running", "waiting", "blocked"]),
-            "ipc_type": random.choice(["pipe", "queue", "shared_memory"]),
-            "cpu_percent": random.uniform(5, 70),
-            "memory_bytes": random.randint(1_000_000, 6_000_000),
-            "created_at": time.time(),
-            "messages_sent": 0,
-            "messages_received": 0,
-            "buffer_usage": random.random()
-        }
+        self.actors[pid] = ProcessActor(pid)
 
     def step(self):
-        if len(self.processes) < 5:
+        if len(self.actors) < 6:
             self.spawn()
 
-        pids = list(self.processes.keys())
+        ids = list(self.actors.keys())
 
-        # rebuild connections (graph style)
-        self.connections = []
-        for i in range(len(pids) - 1):
-            self.connections.append({
-                "source": pids[i],
-                "target": pids[i+1],
+        # update actors
+        for a in self.actors.values():
+            a.tick()
+
+        # connections
+        self.connections = [
+            {
+                "source": ids[i],
+                "target": ids[(i+1) % len(ids)],
                 "ipc_type": random.choice(["pipe", "queue", "shared_memory"])
-            })
+            }
+            for i in range(len(ids))
+        ]
 
-        # simulate message
-        if len(pids) > 1:
-            s, t = random.sample(pids, 2)
-            latency = round(random.uniform(0.2, 2.0), 2)
-
-            self.messages.append({
-                "source": s,
-                "target": t,
+        # messages
+        if len(ids) > 1:
+            a, b = random.sample(ids, 2)
+            msg = {
+                "source": a,
+                "target": b,
                 "size_bytes": random.randint(100, 1000),
-                "latency_ms": latency,
+                "latency_ms": round(random.uniform(0.2, 2.0), 2),
                 "timestamp": time.time()
-            })
+            }
+            self.messages.append(msg)
 
-            self.processes[s]["messages_sent"] += 1
-            self.processes[t]["messages_received"] += 1
-
-        # fluctuate cpu/memory
-        for p in self.processes.values():
-            p["cpu_percent"] = max(0, min(100, p["cpu_percent"] + random.uniform(-4, 4)))
-            p["memory_bytes"] += random.randint(-50000, 50000)
+            self.actors[a].sent += 1
+            self.actors[b].recv += 1
 
         # logs
         self.logs.append({
             "timestamp": time.time(),
             "level": "info",
-            "message": "tick"
+            "message": "engine tick"
         })
 
         # metrics
-        self.metrics["active_processes"] = len(self.processes)
-        self.metrics["messages_per_sec"] = random.uniform(2, 9)
-        self.metrics["avg_latency_ms"] = random.uniform(0.5, 1.5)
-        self.metrics["throughput_kbps"] = random.uniform(30, 120)
+        self.metrics = {
+            "messages_per_sec": random.uniform(1, 10),
+            "avg_latency_ms": random.uniform(0.5, 1.5),
+            "throughput_kbps": random.uniform(20, 100),
+            "active_processes": len(self.actors)
+        }
 
-engine = Engine()
+    def snapshot(self):
+        return {
+            "processes": {k: v.to_dict() for k, v in self.actors.items()},
+            "connections": self.connections,
+            "logs": self.logs[-50:],
+            "messages": self.messages[-50:],
+            "metrics": self.metrics
+        }
 
-# ───────────── BACKGROUND LOOP ─────────────
+engine = AsyncEngine()
 
-def run_engine():
+# ───────────── ASYNC LOOP ─────────────
+
+async def run_loop():
     while True:
         engine.step()
-        time.sleep(1)
+        await asyncio.sleep(1)
 
-threading.Thread(target=run_engine, daemon=True).start()
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(run_loop())
 
 # ───────────── API ─────────────
 
 @app.get("/api/state")
-def state():
-    return {
-        "processes": engine.processes,
-        "connections": engine.connections,
-        "logs": list(engine.logs),
-        "messages": list(engine.messages),
-        "metrics": engine.metrics
-    }
-
-@app.post("/api/process/create")
-def create():
-    engine.spawn()
-    return {"status": "ok"}
+async def get_state():
+    return engine.snapshot()
 
 # ───────────── WEBSOCKET ─────────────
 
+clients = []
+
 @app.websocket("/ws")
-async def websocket(ws: WebSocket):
-    await manager.connect(ws)
+async def ws(socket: WebSocket):
+    await socket.accept()
+    clients.append(socket)
+
     try:
         while True:
             await asyncio.sleep(1)
-            await manager.broadcast(json.dumps({
+            data = json.dumps({
                 "type": "state_update",
-                "processes": engine.processes,
-                "connections": engine.connections,
-                "metrics": engine.metrics,
-                "logs": list(engine.logs),
-                "messages": list(engine.messages)
-            }))
-    except WebSocketDisconnect:
-        manager.disconnect(ws)
+                **engine.snapshot()
+            })
+            await socket.send_text(data)
+    except:
+        clients.remove(socket)
