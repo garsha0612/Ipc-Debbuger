@@ -1,13 +1,14 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import asyncio
+from dataclasses import dataclass, asdict
 import os
 import random
 import time
-import json
+import asyncio
+from typing import Dict, List
 
-app = FastAPI(title="IPC Async Actor Engine")
+app = FastAPI(title="IPC Polling Engine")
 
 # ───────────── STATIC ─────────────
 
@@ -20,94 +21,95 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 async def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-# ───────────── ACTOR MODEL ─────────────
+# ───────────── DATA MODELS ─────────────
 
-class ProcessActor:
-    def __init__(self, pid):
-        self.pid = pid
-        self.name = f"Actor-{pid}"
-        self.state = "running"
-        self.ipc_type = random.choice(["pipe", "queue", "shared_memory"])
-        self.cpu = random.uniform(5, 50)
-        self.mem = random.randint(1_000_000, 5_000_000)
-        self.created_at = time.time()
-        self.sent = 0
-        self.recv = 0
-        self.buffer = random.random()
+@dataclass
+class Process:
+    pid: str
+    name: str
+    state: str
+    ipc_type: str
+    cpu_percent: float
+    memory_bytes: int
+    created_at: float
+    messages_sent: int
+    messages_received: int
+    buffer_usage: float
 
-    def tick(self):
-        self.cpu = max(0, min(100, self.cpu + random.uniform(-3, 3)))
-        self.mem += random.randint(-10000, 10000)
-        self.state = random.choice(["running", "waiting", "blocked"])
-
-    def to_dict(self):
-        return {
-            "pid": self.pid,
-            "name": self.name,
-            "state": self.state,
-            "ipc_type": self.ipc_type,
-            "cpu_percent": round(self.cpu, 2),
-            "memory_bytes": self.mem,
-            "created_at": self.created_at,
-            "messages_sent": self.sent,
-            "messages_received": self.recv,
-            "buffer_usage": self.buffer
-        }
+@dataclass
+class Message:
+    source: str
+    target: str
+    size_bytes: int
+    latency_ms: float
+    timestamp: float
 
 # ───────────── ENGINE ─────────────
 
-class AsyncEngine:
+class PollingEngine:
     def __init__(self):
-        self.actors = {}
-        self.logs = []
-        self.messages = []
+        self.processes: Dict[str, Process] = {}
+        self.messages: List[Message] = []
         self.connections = []
+        self.logs = []
         self.metrics = {}
 
     def spawn(self):
         pid = str(random.randint(1000, 9999))
-        self.actors[pid] = ProcessActor(pid)
+        self.processes[pid] = Process(
+            pid=pid,
+            name=f"Proc-{pid}",
+            state=random.choice(["running", "waiting", "blocked"]),
+            ipc_type=random.choice(["pipe", "queue", "shared_memory"]),
+            cpu_percent=random.uniform(5, 60),
+            memory_bytes=random.randint(1_000_000, 6_000_000),
+            created_at=time.time(),
+            messages_sent=0,
+            messages_received=0,
+            buffer_usage=random.random()
+        )
 
-    def step(self):
-        if len(self.actors) < 6:
+    def simulate_step(self):
+        if len(self.processes) < 5:
             self.spawn()
 
-        ids = list(self.actors.keys())
+        pids = list(self.processes.keys())
 
-        # update actors
-        for a in self.actors.values():
-            a.tick()
+        # update processes
+        for p in self.processes.values():
+            p.cpu_percent = max(0, min(100, p.cpu_percent + random.uniform(-2, 2)))
+            p.memory_bytes += random.randint(-10000, 10000)
+            p.state = random.choice(["running", "waiting", "blocked"])
 
         # connections
-        self.connections = [
-            {
-                "source": ids[i],
-                "target": ids[(i+1) % len(ids)],
+        self.connections = []
+        for i in range(len(pids) - 1):
+            self.connections.append({
+                "source": pids[i],
+                "target": pids[i+1],
                 "ipc_type": random.choice(["pipe", "queue", "shared_memory"])
-            }
-            for i in range(len(ids))
-        ]
+            })
 
-        # messages
-        if len(ids) > 1:
-            a, b = random.sample(ids, 2)
-            msg = {
-                "source": a,
-                "target": b,
-                "size_bytes": random.randint(100, 1000),
-                "latency_ms": round(random.uniform(0.2, 2.0), 2),
-                "timestamp": time.time()
-            }
+        # message
+        if len(pids) > 1:
+            a, b = random.sample(pids, 2)
+            msg = Message(
+                source=a,
+                target=b,
+                size_bytes=random.randint(100, 1000),
+                latency_ms=random.uniform(0.2, 2.0),
+                timestamp=time.time()
+            )
             self.messages.append(msg)
 
-            self.actors[a].sent += 1
-            self.actors[b].recv += 1
+            self.processes[a].messages_sent += 1
+            self.processes[b].messages_received += 1
 
         # logs
         self.logs.append({
             "timestamp": time.time(),
             "level": "info",
-            "message": "engine tick"
+            "message": "step executed"
         })
 
         # metrics
@@ -115,30 +117,30 @@ class AsyncEngine:
             "messages_per_sec": random.uniform(1, 10),
             "avg_latency_ms": random.uniform(0.5, 1.5),
             "throughput_kbps": random.uniform(20, 100),
-            "active_processes": len(self.actors)
+            "active_processes": len(self.processes)
         }
 
     def snapshot(self):
         return {
-            "processes": {k: v.to_dict() for k, v in self.actors.items()},
+            "processes": {k: asdict(v) for k, v in self.processes.items()},
             "connections": self.connections,
+            "messages": [asdict(m) for m in self.messages[-50:]],
             "logs": self.logs[-50:],
-            "messages": self.messages[-50:],
             "metrics": self.metrics
         }
 
-engine = AsyncEngine()
+engine = PollingEngine()
 
-# ───────────── ASYNC LOOP ─────────────
+# ───────────── SCHEDULER LOOP ─────────────
 
-async def run_loop():
+async def scheduler():
     while True:
-        engine.step()
+        engine.simulate_step()
         await asyncio.sleep(1)
 
 @app.on_event("startup")
-async def startup():
-    asyncio.create_task(run_loop())
+async def start_scheduler():
+    asyncio.create_task(scheduler())
 
 # ───────────── API ─────────────
 
@@ -146,22 +148,14 @@ async def startup():
 async def get_state():
     return engine.snapshot()
 
-# ───────────── WEBSOCKET ─────────────
+@app.post("/api/process/create")
+async def create():
+    engine.spawn()
+    return {"status": "created"}
 
-clients = []
-
-@app.websocket("/ws")
-async def ws(socket: WebSocket):
-    await socket.accept()
-    clients.append(socket)
-
-    try:
-        while True:
-            await asyncio.sleep(1)
-            data = json.dumps({
-                "type": "state_update",
-                **engine.snapshot()
-            })
-            await socket.send_text(data)
-    except:
-        clients.remove(socket)
+@app.post("/api/reset")
+async def reset():
+    engine.processes.clear()
+    engine.messages.clear()
+    engine.logs.clear()
+    return {"status": "reset"}
