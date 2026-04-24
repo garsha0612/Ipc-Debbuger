@@ -1,16 +1,20 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from dataclasses import dataclass, asdict
-import os
-import random
-import time
 import asyncio
-from typing import Dict, List
+import os
+import time
+import random
+from collections import deque
+import threading
+import json
+import uuid
 
-app = FastAPI(title="IPC Polling Engine")
+app = FastAPI()
 
-# ───────────── STATIC ─────────────
+# ─────────────────────────────────────────────
+# STATIC FILES
+# ─────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(BASE_DIR, "../frontend")
@@ -18,144 +22,218 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "../frontend")
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 @app.get("/")
-async def index():
+async def serve():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-# ───────────── DATA MODELS ─────────────
+# ─────────────────────────────────────────────
+# GLOBAL STATE
+# ─────────────────────────────────────────────
 
-@dataclass
-class Process:
-    pid: str
-    name: str
-    state: str
-    ipc_type: str
-    cpu_percent: float
-    memory_bytes: int
-    created_at: float
-    messages_sent: int
-    messages_received: int
-    buffer_usage: float
+state = {
+    "processes": {},
+    "connections": [],
+    "logs": deque(maxlen=100),
+    "messages": deque(maxlen=100),
+    "metrics": {
+        # FIX 1: Added total_messages — frontend calls .toLocaleString() on this
+        "total_messages": 0,
+        "messages_per_sec": 0,
+        "avg_latency_ms": 0,
+        "throughput_kbps": 0,
+        "active_processes": 0,
+        "deadlock_detected": False,
+        "deadlock_nodes": [],
+    }
+}
 
-@dataclass
-class Message:
-    source: str
-    target: str
-    size_bytes: int
-    latency_ms: float
-    timestamp: float
+# ─────────────────────────────────────────────
+# CREATE PROCESS
+# ─────────────────────────────────────────────
 
-# ───────────── ENGINE ─────────────
+def create_process(name=None, ipc_type=None):
+    pid = str(random.randint(1000, 9999))
+    cpu_percent = round(random.uniform(5, 50), 2)
+    memory_bytes = random.randint(500_000, 5_000_000)
 
-class PollingEngine:
-    def __init__(self):
-        self.processes: Dict[str, Process] = {}
-        self.messages: List[Message] = []
-        self.connections = []
-        self.logs = []
-        self.metrics = {}
+    state["processes"][pid] = {
+        "pid": pid,
+        "name": name or f"Process-{pid}",
+        "state": random.choice(["running", "waiting", "blocked"]),
+        "ipc_type": ipc_type or random.choice(["pipe", "queue", "shared_memory"]),
 
-    def spawn(self):
-        pid = str(random.randint(1000, 9999))
-        self.processes[pid] = Process(
-            pid=pid,
-            name=f"Proc-{pid}",
-            state=random.choice(["running", "waiting", "blocked"]),
-            ipc_type=random.choice(["pipe", "queue", "shared_memory"]),
-            cpu_percent=random.uniform(5, 60),
-            memory_bytes=random.randint(1_000_000, 6_000_000),
-            created_at=time.time(),
-            messages_sent=0,
-            messages_received=0,
-            buffer_usage=random.random()
-        )
+        # ✅ FIX 2: Frontend uses proc.cpu and proc.memory_kb — provide both aliases
+        "cpu": cpu_percent,                        # used by app.js renderProcessList / detailPanel
+        "cpu_percent": cpu_percent,                # keep original too
+        "memory_kb": memory_bytes // 1024,         # app.js does memory_kb / 1024 → MB
+        "memory_bytes": memory_bytes,              # keep original too
 
-    def simulate_step(self):
-        if len(self.processes) < 5:
-            self.spawn()
+        "messages_sent": 0,
+        "messages_received": 0,
+        "buffer_usage": round(random.random(), 3),
+    }
+    return state["processes"][pid]
 
-        pids = list(self.processes.keys())
+# ─────────────────────────────────────────────
+# SIMULATION
+# ─────────────────────────────────────────────
 
-        # update processes
-        for p in self.processes.values():
-            p.cpu_percent = max(0, min(100, p.cpu_percent + random.uniform(-2, 2)))
-            p.memory_bytes += random.randint(-10000, 10000)
-            p.state = random.choice(["running", "waiting", "blocked"])
+def simulate():
+    while True:
+        if len(state["processes"]) < 5:
+            create_process()
 
-        # connections
-        self.connections = []
+        pids = list(state["processes"].keys())
+
+        # Randomly update CPU/memory each tick so the UI feels alive
+        for pid, proc in state["processes"].items():
+            proc["cpu"] = round(random.uniform(5, 50), 2)
+            proc["cpu_percent"] = proc["cpu"]
+            proc["memory_kb"] = random.randint(500, 5000)
+            proc["memory_bytes"] = proc["memory_kb"] * 1024
+            proc["buffer_usage"] = round(random.random(), 3)
+
+        # ✅ CONNECTIONS
+        state["connections"] = []
         for i in range(len(pids) - 1):
-            self.connections.append({
+            state["connections"].append({
                 "source": pids[i],
-                "target": pids[i+1],
-                "ipc_type": random.choice(["pipe", "queue", "shared_memory"])
+                "target": pids[i + 1],
+                "ipc_type": random.choice(["pipe", "queue", "shared_memory"]),
             })
 
-        # message
-        if len(pids) > 1:
-            a, b = random.sample(pids, 2)
-            msg = Message(
-                source=a,
-                target=b,
-                size_bytes=random.randint(100, 1000),
-                latency_ms=random.uniform(0.2, 2.0),
-                timestamp=time.time()
-            )
-            self.messages.append(msg)
+        # ✅ FIX 3: Messages now include all fields the frontend expects:
+        #   - id          (for deduplication in msgBuffer)
+        #   - ipc_type    (renderMessages reads msg.ipc_type)
+        #   - ts_human    (renderMessages renders msg.ts_human)
+        if len(pids) >= 2:
+            src, dst = random.sample(pids, 2)
+            ipc_type = random.choice(["pipe", "queue", "shared_memory"])
+            latency  = round(random.uniform(0.1, 2.0), 2)
+            size     = random.randint(100, 1000)
+            ts       = time.time()
 
-            self.processes[a].messages_sent += 1
-            self.processes[b].messages_received += 1
+            state["messages"].append({
+                "id":          str(uuid.uuid4()),          # ✅ dedup key
+                "source":      src,
+                "target":      dst,
+                "ipc_type":    ipc_type,                   # ✅ required by renderMessages
+                "size_bytes":  size,
+                "latency_ms":  latency,
+                "timestamp":   ts,
+                "ts_human":    time.strftime("%H:%M:%S", time.localtime(ts)),  # ✅ required by renderMessages
+            })
 
-        # logs
-        self.logs.append({
-            "timestamp": time.time(),
-            "level": "info",
-            "message": "step executed"
+            state["processes"][src]["messages_sent"]     += 1
+            state["processes"][dst]["messages_received"] += 1
+            state["metrics"]["total_messages"]           += 1  # ✅ increment total
+
+        # ✅ FIX 4: Logs now include an id for deduplication (store.js filters by l.id)
+        state["logs"].append({
+            "id":        str(uuid.uuid4()),
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level":     "info",
+            "message":   "Simulation tick",
         })
 
-        # metrics
-        self.metrics = {
-            "messages_per_sec": random.uniform(1, 10),
-            "avg_latency_ms": random.uniform(0.5, 1.5),
-            "throughput_kbps": random.uniform(20, 100),
-            "active_processes": len(self.processes)
-        }
+        # Metrics
+        state["metrics"]["active_processes"]  = len(state["processes"])
+        state["metrics"]["messages_per_sec"]  = round(random.uniform(1, 10), 2)
+        state["metrics"]["avg_latency_ms"]    = round(random.uniform(0.1, 3.0), 2)
+        state["metrics"]["throughput_kbps"]   = round(random.uniform(10, 200), 2)
 
-    def snapshot(self):
-        return {
-            "processes": {k: asdict(v) for k, v in self.processes.items()},
-            "connections": self.connections,
-            "messages": [asdict(m) for m in self.messages[-50:]],
-            "logs": self.logs[-50:],
-            "metrics": self.metrics
-        }
+        time.sleep(1)
 
-engine = PollingEngine()
+# ─────────────────────────────────────────────
+# START SIMULATION
+# ─────────────────────────────────────────────
 
-# ───────────── SCHEDULER LOOP ─────────────
+for _ in range(4):
+    create_process()
 
-async def scheduler():
-    while True:
-        engine.simulate_step()
-        await asyncio.sleep(1)
+threading.Thread(target=simulate, daemon=True).start()
 
-@app.on_event("startup")
-async def start_scheduler():
-    asyncio.create_task(scheduler())
-
-# ───────────── API ─────────────
+# ─────────────────────────────────────────────
+# API ENDPOINTS
+# ─────────────────────────────────────────────
 
 @app.get("/api/state")
-async def get_state():
-    return engine.snapshot()
+def get_state():
+    return {
+        "processes":   state["processes"],
+        "connections": state["connections"],
+        "logs":        list(state["logs"]),
+        "messages":    list(state["messages"]),
+        "metrics":     state["metrics"],
+    }
 
 @app.post("/api/process/create")
-async def create():
-    engine.spawn()
-    return {"status": "created"}
+def api_create_process(body: dict = {}):
+    proc = create_process(
+        name=body.get("name"),
+        ipc_type=body.get("ipc_type"),
+    )
+    return {"status": "created", "process": proc}
 
-@app.post("/api/reset")
-async def reset():
-    engine.processes.clear()
-    engine.messages.clear()
-    engine.logs.clear()
-    return {"status": "reset"}
+@app.delete("/api/process/{pid}")
+def api_kill_process(pid: str):
+    if pid in state["processes"]:
+        del state["processes"][pid]
+        return {"status": "killed"}
+    return {"status": "not_found"}
+
+@app.post("/api/process/{pid}/state")
+async def api_set_state(pid: str, body: dict):
+    if pid in state["processes"]:
+        state["processes"][pid]["state"] = body.get("state", "running")
+        return {"status": "ok"}
+    return {"status": "not_found"}
+
+@app.post("/api/send_burst")
+def send_burst(body: dict = {}):
+    count = body.get("count", 5)
+    for _ in range(count):
+        create_process()
+    return {"status": "burst_sent", "injected": count}
+
+@app.post("/api/inject/deadlock")
+def inject_deadlock():
+    pids = list(state["processes"].keys())
+    if len(pids) < 3:
+        return {"status": "error", "detail": "Need at least 3 processes"}
+    nodes = pids[:3]
+    for pid in nodes:
+        state["processes"][pid]["state"] = "blocked"
+    state["metrics"]["deadlock_detected"] = True
+    state["metrics"]["deadlock_nodes"]    = nodes
+    return {"status": "ok", "nodes": nodes}
+
+@app.post("/api/inject/clear")
+def clear_deadlock():
+    state["metrics"]["deadlock_detected"] = False
+    state["metrics"]["deadlock_nodes"]    = []
+    for proc in state["processes"].values():
+        if proc["state"] == "blocked":
+            proc["state"] = "running"
+    return {"status": "ok"}
+
+# ─────────────────────────────────────────────
+# WEBSOCKET
+# ─────────────────────────────────────────────
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            await asyncio.sleep(1)
+            data = {
+                "type":        "state_update",
+                "processes":   state["processes"],
+                "connections": state["connections"],
+                "metrics":     state["metrics"],
+                "logs":        list(state["logs"]),
+                "messages":    list(state["messages"]),
+            }
+            await websocket.send_text(json.dumps(data))
+    except WebSocketDisconnect:
+        print("Client disconnected")
